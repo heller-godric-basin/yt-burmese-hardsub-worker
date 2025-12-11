@@ -116,7 +116,7 @@ def vtt_to_ass(
     font_name: str = DEFAULT_FONT_NAME,
     font_size: int = DEFAULT_FONT_SIZE,
 ) -> str:
-    """Convert WebVTT to ASS using ffmpeg, then adjust style to use Burmese font."""
+    """Convert WebVTT to ASS using ffmpeg, then adjust style for proper Burmese rendering."""
     print(f"Converting VTT to ASS: {vtt_path} -> {ass_path}")
 
     # Initial conversion via ffmpeg
@@ -131,7 +131,7 @@ def vtt_to_ass(
         timeout=300,
     )
 
-    # Adjust the default style to use our Burmese font and size
+    # Adjust the default style to use our Burmese font, size, and CRITICAL: UTF-8 encoding
     from pathlib import Path as _Path
 
     content = _Path(ass_path).read_text(encoding="utf-8")
@@ -140,17 +140,21 @@ def vtt_to_ass(
     for line in lines:
         if line.startswith("Style: ") and "," in line:
             parts = line.split(",")
-            # Name, Fontname, Fontsize, ...
-            if len(parts) >= 3:
-                parts[1] = font_name
-                try:
-                    parts[2] = str(font_size)
-                except Exception:
-                    pass
+            # ASS Style format has 23 fields, with Encoding being the last (index 20 in 0-indexed)
+            # Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,
+            # Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle,
+            # Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+            if len(parts) >= 21:
+                parts[1] = font_name           # Fontname
+                parts[2] = str(font_size)      # Fontsize
+                # CRITICAL FIX: Set Encoding to 1 (UTF-8)
+                # This enables proper HarfBuzz text shaping for complex scripts like Burmese
+                parts[20] = "1"                # Encoding: 1 = UTF-8
                 line = ",".join(parts)
         new_lines.append(line)
 
     _Path(ass_path).write_text("\n".join(new_lines), encoding="utf-8")
+    print(f"Applied UTF-8 encoding fix for Burmese text rendering")
     return ass_path
 
 
@@ -160,16 +164,18 @@ def hard_sub_video(
     output_path: str,
     fonts_dir: str = "/usr/share/fonts/truetype/noto",
 ) -> str:
-    """Burn ASS subtitles into the video using ffmpeg/libass."""
+    """Burn ASS subtitles into the video using ffmpeg/libass with HarfBuzz shaping."""
     print(f"Hard-subbing subtitles: {ass_path} -> {output_path}")
 
+    # Use 'ass' filter (not 'subtitles') for proper ASS rendering with HarfBuzz
+    # This ensures complex script shaping works correctly for Burmese text
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
         video_path,
         "-vf",
-        f"subtitles='{ass_path}':fontsdir='{fonts_dir}'",
+        f"ass={ass_path}",
         "-c:v",
         "libx264",
         "-preset",

@@ -2,10 +2,14 @@ FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 WORKDIR /
 
+# Install system dependencies including libass with HarfBuzz support
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3-pip \
     ffmpeg \
+    libass9 \
+    libharfbuzz0b \
+    fontconfig \
     git \
     curl \
     wget \
@@ -19,6 +23,7 @@ RUN pip install --no-cache-dir \
     requests>=2.31.0
 
 # Install Noto Sans Myanmar font for proper Burmese rendering
+# This font supports complex script shaping required for Burmese diacritics
 RUN mkdir -p /usr/share/fonts/truetype/noto && \
     wget -O /usr/share/fonts/truetype/noto/NotoSansMyanmar-Regular.ttf \
       https://raw.githubusercontent.com/notofonts/noto-fonts/main/hinted/ttf/NotoSansMyanmar/NotoSansMyanmar-Regular.ttf && \
