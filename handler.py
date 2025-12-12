@@ -24,6 +24,13 @@ from typing import Optional, Dict, Any
 import runpod
 import boto3
 
+try:
+    from pytubefix import YouTube
+    PYTUBEFIX_AVAILABLE = True
+except ImportError:
+    PYTUBEFIX_AVAILABLE = False
+    print("WARNING: pytubefix not available, will only use yt-dlp", file=sys.stderr)
+
 
 DEFAULT_FONT_NAME = "Noto Sans Myanmar"
 DEFAULT_FONT_SIZE = 24
@@ -46,12 +53,12 @@ def run_cmd(cmd: list[str], timeout: int = 600) -> None:
         print(result.stderr, file=sys.stderr)
 
 
-def download_youtube_video(
+def download_youtube_video_ytdlp(
     video_id: str, output_dir: str, max_height: int = DEFAULT_MAX_HEIGHT
 ) -> str:
     """Download full YouTube video (video+audio) up to max_height using yt-dlp."""
     youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"Downloading YouTube video: {youtube_url}")
+    print(f"[YT-DLP] Attempting download: {youtube_url}")
 
     output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
     # Prefer best video up to max_height + best audio, falling back to best
@@ -75,8 +82,158 @@ def download_youtube_video(
     # Prefer mp4, else take first
     mp4_candidates = [p for p in candidates if p.suffix == ".mp4"]
     video_path = str((mp4_candidates[0] if mp4_candidates else candidates[0]).resolve())
-    print(f"Downloaded video to: {video_path}")
+    print(f"[YT-DLP] ✓ Successfully downloaded video to: {video_path}")
     return video_path
+
+
+def download_youtube_video_pytubefix(
+    video_id: str, output_dir: str, max_height: int = DEFAULT_MAX_HEIGHT
+) -> str:
+    """
+    Download full YouTube video (video+audio) up to max_height using pytubefix.
+    Fallback method when yt-dlp fails.
+    """
+    if not PYTUBEFIX_AVAILABLE:
+        raise RuntimeError("pytubefix is not available")
+
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    print(f"[PYTUBEFIX] Attempting download: {youtube_url}")
+
+    yt = YouTube(youtube_url)
+    print(f"[PYTUBEFIX] Video title: {yt.title}")
+    print(f"[PYTUBEFIX] Video length: {yt.length}s")
+
+    # Try to get progressive stream first (has both video and audio, max 720p)
+    progressive_stream = yt.streams.filter(
+        progressive=True,
+        file_extension='mp4'
+    ).order_by('resolution').desc().first()
+
+    # Check if progressive stream meets our quality requirements
+    if progressive_stream:
+        res_height = int(progressive_stream.resolution.replace('p', ''))
+        if res_height >= max_height or max_height <= 720:
+            print(f"[PYTUBEFIX] Using progressive stream: {progressive_stream.resolution}")
+            output_path = progressive_stream.download(
+                output_path=output_dir,
+                filename=f"{video_id}.mp4"
+            )
+            print(f"[PYTUBEFIX] ✓ Successfully downloaded video to: {output_path}")
+            return output_path
+
+    # Need higher quality - download and merge separate streams
+    print(f"[PYTUBEFIX] Downloading separate video and audio streams for higher quality...")
+
+    # Get best video stream up to max_height
+    video_streams = yt.streams.filter(
+        adaptive=True,
+        file_extension='mp4',
+        only_video=True
+    )
+
+    # Filter by max_height
+    suitable_streams = [
+        s for s in video_streams
+        if s.resolution and int(s.resolution.replace('p', '')) <= max_height
+    ]
+
+    if not suitable_streams:
+        suitable_streams = list(video_streams)
+
+    video_stream = max(
+        suitable_streams,
+        key=lambda s: int(s.resolution.replace('p', '')) if s.resolution else 0
+    )
+
+    # Get best audio stream
+    audio_stream = yt.streams.filter(
+        adaptive=True,
+        only_audio=True
+    ).order_by('abr').desc().first()
+
+    if not video_stream or not audio_stream:
+        raise RuntimeError("Could not find suitable video or audio streams")
+
+    print(f"[PYTUBEFIX] Video stream: {video_stream.resolution} ({video_stream.mime_type})")
+    print(f"[PYTUBEFIX] Audio stream: {audio_stream.abr} ({audio_stream.mime_type})")
+
+    # Download both to temp files
+    output_dir_path = Path(output_dir)
+    print(f"[PYTUBEFIX] Downloading video stream...")
+    video_temp = video_stream.download(
+        output_path=str(output_dir_path),
+        filename_prefix="temp_video_"
+    )
+    print(f"[PYTUBEFIX] Downloading audio stream...")
+    audio_temp = audio_stream.download(
+        output_path=str(output_dir_path),
+        filename_prefix="temp_audio_"
+    )
+
+    # Merge with ffmpeg
+    output_path = str(output_dir_path / f"{video_id}.mp4")
+    print(f"[PYTUBEFIX] Merging video and audio streams with ffmpeg...")
+    merge_cmd = [
+        "ffmpeg", "-y",
+        "-i", video_temp,
+        "-i", audio_temp,
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        output_path
+    ]
+
+    result = subprocess.run(merge_cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr, file=sys.stderr)
+        raise RuntimeError(f"FFmpeg merge failed: {result.stderr}")
+
+    # Cleanup temp files
+    os.remove(video_temp)
+    os.remove(audio_temp)
+
+    print(f"[PYTUBEFIX] ✓ Successfully downloaded and merged video to: {output_path}")
+    return output_path
+
+
+def download_youtube_video(
+    video_id: str, output_dir: str, max_height: int = DEFAULT_MAX_HEIGHT
+) -> str:
+    """
+    Download full YouTube video (video+audio) up to max_height.
+
+    Strategy:
+    1. Try yt-dlp first (faster, more reliable when working)
+    2. Fall back to pytubefix if yt-dlp fails (better at bypassing bot detection)
+    """
+    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+    print(f"=" * 70)
+    print(f"YOUTUBE DOWNLOAD START: {youtube_url}")
+    print(f"=" * 70)
+
+    # Try yt-dlp first
+    try:
+        print(f"[STRATEGY] Attempting primary method: yt-dlp")
+        video_path = download_youtube_video_ytdlp(video_id, output_dir, max_height)
+        print(f"[STRATEGY] ✓ PRIMARY METHOD SUCCEEDED (yt-dlp)")
+        return video_path
+    except Exception as e:
+        print(f"[STRATEGY] ✗ Primary method failed (yt-dlp): {e}", file=sys.stderr)
+        print(f"[STRATEGY] Attempting fallback method: pytubefix")
+
+    # Fall back to pytubefix
+    try:
+        video_path = download_youtube_video_pytubefix(video_id, output_dir, max_height)
+        print(f"[STRATEGY] ✓ FALLBACK METHOD SUCCEEDED (pytubefix)")
+        return video_path
+    except Exception as e:
+        print(f"[STRATEGY] ✗ Fallback method failed (pytubefix): {e}", file=sys.stderr)
+        raise RuntimeError(
+            f"All download methods failed for {video_id}. "
+            f"yt-dlp and pytubefix both encountered errors. "
+            f"Last error: {e}"
+        )
 
 
 def get_s3_client(
@@ -304,5 +461,6 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    print("Starting Runpod Serverless handler for YouTube Burmese hardsub worker v1")
+    print("Starting Runpod Serverless handler for YouTube Burmese hardsub worker v2")
+    print("Download strategy: yt-dlp (primary) -> pytubefix (fallback)")
     runpod.serverless.start({"handler": handler})

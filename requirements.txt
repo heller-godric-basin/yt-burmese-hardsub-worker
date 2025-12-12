@@ -1,4 +1,5 @@
 yt-dlp>=2024.12.6
+pytubefix>=10.3.6
 boto3>=1.28.85
 runpod>=1.5.4
 requests>=2.31.0
