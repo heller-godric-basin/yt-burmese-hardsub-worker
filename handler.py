@@ -461,6 +461,6 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    print("Starting Runpod Serverless handler for YouTube Burmese hardsub worker v2")
+    print("Starting Runpod Serverless handler for YouTube Burmese hardsub worker v2.1")
     print("Download strategy: yt-dlp (primary) -> pytubefix (fallback)")
     runpod.serverless.start({"handler": handler})
