@@ -21,13 +21,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-try:
-    import runpod
-    import boto3
-except ImportError as e:
-    print(f"ERROR: Failed to import required modules: {e}", file=sys.stderr)
-    print("This likely indicates a dependency installation issue.", file=sys.stderr)
-    sys.exit(1)
+import runpod
+import boto3
 
 
 DEFAULT_FONT_NAME = "Noto Sans Myanmar"

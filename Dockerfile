@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir \
     boto3>=1.28.85 \
     runpod>=1.5.4 \
     requests>=2.31.0 \
-    aiohttp>=3.9.0,<4.0 \
+    aiohttp>=3.9.0 \
     aiodns>=3.1.0 \
     cchardet>=2.1.7
 
