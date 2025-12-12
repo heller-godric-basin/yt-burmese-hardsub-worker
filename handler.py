@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Runpod Serverless Handler for YouTube Burmese Hardsub pipeline
 
