@@ -1,4 +1,4 @@
-# YouTube Burmese Hardsub Worker x
+# YouTube Burmese Hardsub Worker
 
 Serverless worker that:
 
@@ -6,9 +6,39 @@ Serverless worker that:
 - Fetches an existing polished Burmese WebVTT file from S3 at `storage/polished/{video_id}.my.vtt`
 - Converts the VTT to ASS with proper Burmese font (Noto Sans Myanmar) and UTF-8 encoding
 - Hard-subs the subtitles onto the video using ffmpeg with HarfBuzz text shaping
+- Supports configurable subtitle background styles (opaque black to mask existing burned-in subs)
 - Uploads the final hardsubbed MP4 to `storage/hard-subbed/{video_id}.mp4`
 
 Designed to run as a Runpod serverless worker, similar to the original `yt-whisper-worker`.
+
+## Input Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `video_id` | Yes | - | YouTube video ID |
+| `request_id` | No | video_id | Request tracking ID |
+| `subtitle_style` | No | `opaque_black` | Subtitle background style (see below) |
+| `s3_bucket` | No | env var | S3 bucket name |
+| `s3_endpoint_url` | No | env var | S3 endpoint URL |
+| `polished_prefix` | No | `storage/polished` | S3 prefix for input VTT |
+| `hardsub_prefix` | No | `storage/hard-subbed` | S3 prefix for output MP4 |
+
+### Subtitle Styles
+
+| Style | Description |
+|-------|-------------|
+| `opaque_black` | White text on fully opaque black box. **Recommended for videos with existing burned-in subtitles** (Chinese, English, etc.) as it masks them completely. |
+| `transparent` | White text with black outline, no background box. Traditional subtitle look. |
+
+Example request:
+```json
+{
+  "input": {
+    "video_id": "dQw4w9WgXcQ",
+    "subtitle_style": "opaque_black"
+  }
+}
+```
 
 ## Technical Details
 

@@ -23,6 +23,7 @@ from typing import Optional, Dict, Any
 
 import runpod
 import boto3
+from enum import Enum
 
 try:
     from pytubefix import YouTube
@@ -37,6 +38,17 @@ DEFAULT_FONT_SIZE = 24
 DEFAULT_POLISHED_PREFIX = "storage/polished"
 DEFAULT_HARDSUB_PREFIX = "storage/hard-subbed"
 DEFAULT_MAX_HEIGHT = 1080
+
+
+class SubtitleStyle(str, Enum):
+    """Subtitle background style options."""
+    OPAQUE_BLACK = "opaque_black"      # White text on opaque black box (masks existing subs)
+    TRANSPARENT = "transparent"         # White text with outline, no background box
+    # Future options:
+    # WHITE_BACKGROUND = "white_background"  # Black text on white box
+
+
+DEFAULT_SUBTITLE_STYLE = SubtitleStyle.OPAQUE_BLACK
 
 
 def run_cmd(cmd: list[str], timeout: int = 600) -> None:
@@ -273,9 +285,19 @@ def vtt_to_ass(
     ass_path: str,
     font_name: str = DEFAULT_FONT_NAME,
     font_size: int = DEFAULT_FONT_SIZE,
+    subtitle_style: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
 ) -> str:
-    """Convert WebVTT to ASS using ffmpeg, then adjust style for proper Burmese rendering."""
+    """Convert WebVTT to ASS using ffmpeg, then adjust style for proper Burmese rendering.
+
+    Args:
+        vtt_path: Path to input WebVTT file
+        ass_path: Path to output ASS file
+        font_name: Font family name for subtitles
+        font_size: Font size in points
+        subtitle_style: Background style (opaque_black masks existing burned-in subs)
+    """
     print(f"Converting VTT to ASS: {vtt_path} -> {ass_path}")
+    print(f"Subtitle style: {subtitle_style.value}")
 
     # Initial conversion via ffmpeg
     run_cmd(
@@ -298,21 +320,43 @@ def vtt_to_ass(
     for line in lines:
         if line.startswith("Style: ") and "," in line:
             parts = line.split(",")
-            # ASS Style format has 23 fields, with Encoding being the last (index 20 in 0-indexed)
-            # Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour,
-            # Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle,
-            # Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-            if len(parts) >= 21:
+            # ASS Style format has 23 fields:
+            # 0: Name, 1: Fontname, 2: Fontsize, 3: PrimaryColour, 4: SecondaryColour,
+            # 5: OutlineColour, 6: BackColour, 7: Bold, 8: Italic, 9: Underline,
+            # 10: StrikeOut, 11: ScaleX, 12: ScaleY, 13: Spacing, 14: Angle,
+            # 15: BorderStyle, 16: Outline, 17: Shadow, 18: Alignment,
+            # 19: MarginL, 20: MarginR, 21: MarginV, 22: Encoding
+            if len(parts) >= 23:
                 parts[1] = font_name           # Fontname
                 parts[2] = str(font_size)      # Fontsize
+
+                # Apply subtitle style settings
+                if subtitle_style == SubtitleStyle.OPAQUE_BLACK:
+                    # Opaque black box behind white text - masks existing burned-in subs
+                    parts[3] = "&H00FFFFFF"    # PrimaryColour: white text
+                    parts[5] = "&H00000000"    # OutlineColour: black outline
+                    parts[6] = "&HFF000000"    # BackColour: fully opaque black
+                    parts[15] = "3"            # BorderStyle: 3 = opaque box
+                    parts[16] = "1"            # Outline: thin outline for readability
+                    parts[17] = "0"            # Shadow: no shadow needed with opaque box
+                elif subtitle_style == SubtitleStyle.TRANSPARENT:
+                    # Traditional transparent background with outline
+                    parts[3] = "&H00FFFFFF"    # PrimaryColour: white text
+                    parts[5] = "&H00000000"    # OutlineColour: black outline
+                    parts[6] = "&H00000000"    # BackColour: transparent
+                    parts[15] = "1"            # BorderStyle: 1 = outline + shadow
+                    parts[16] = "2"            # Outline: thicker outline for visibility
+                    parts[17] = "1"            # Shadow: slight shadow
+                # Future: add WHITE_BACKGROUND case here
+
                 # CRITICAL FIX: Set Encoding to 1 (UTF-8)
                 # This enables proper HarfBuzz text shaping for complex scripts like Burmese
-                parts[20] = "1"                # Encoding: 1 = UTF-8
+                parts[22] = "1"                # Encoding: 1 = UTF-8
                 line = ",".join(parts)
         new_lines.append(line)
 
     _Path(ass_path).write_text("\n".join(new_lines), encoding="utf-8")
-    print(f"Applied UTF-8 encoding fix for Burmese text rendering")
+    print(f"Applied subtitle style '{subtitle_style.value}' with UTF-8 encoding for Burmese")
     return ass_path
 
 
@@ -392,10 +436,23 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
             "RUNPOD_SECRET_AWS_SECRET_ACCESS_KEY"
         )
 
+        # Subtitle style option (default: opaque_black to mask existing burned-in subs)
+        subtitle_style_input = job_input.get("subtitle_style", DEFAULT_SUBTITLE_STYLE.value)
+        try:
+            subtitle_style = SubtitleStyle(subtitle_style_input)
+        except ValueError:
+            valid_styles = [s.value for s in SubtitleStyle]
+            return {
+                "status": "error",
+                "error": f"Invalid subtitle_style '{subtitle_style_input}'. Valid options: {valid_styles}",
+                "request_id": request_id,
+            }
+
         print(f"DEBUG: s3_bucket = {s3_bucket}")
         print(f"DEBUG: s3_endpoint = {s3_endpoint}")
         print(f"DEBUG: polished_prefix = {polished_prefix}")
         print(f"DEBUG: hardsub_prefix = {hardsub_prefix}")
+        print(f"DEBUG: subtitle_style = {subtitle_style.value}")
 
         if not s3_bucket:
             return {
@@ -422,13 +479,14 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
                 s3_client, s3_bucket, video_id, vtt_path, prefix=polished_prefix
             )
 
-            # Step 3: Convert VTT to ASS with Burmese font
+            # Step 3: Convert VTT to ASS with Burmese font and subtitle style
             ass_path = str(tmpdir_path / f"{video_id}.ass")
             vtt_to_ass(
                 vtt_path,
                 ass_path,
                 font_name=DEFAULT_FONT_NAME,
                 font_size=DEFAULT_FONT_SIZE,
+                subtitle_style=subtitle_style,
             )
 
             # Step 4: Hard-sub subtitles into video
@@ -449,6 +507,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
             "output_key": output_key,
             "output_path": output_s3_path,
             "bucket": s3_bucket,
+            "subtitle_style": subtitle_style.value,
         }
 
     except Exception as e:
@@ -461,6 +520,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    print("Starting Runpod Serverless handler for YouTube Burmese hardsub worker v2.1")
+    print("Starting Runpod Serverless handler for YouTube Burmese hardsub worker v2.2")
     print("Download strategy: yt-dlp (primary) -> pytubefix (fallback)")
+    print(f"Default subtitle style: {DEFAULT_SUBTITLE_STYLE.value}")
     runpod.serverless.start({"handler": handler})
